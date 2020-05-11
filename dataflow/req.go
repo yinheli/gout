@@ -33,11 +33,11 @@ type Req struct {
 	bodyDecoder decode.Decoder
 
 	// http header
-	headerEncode interface{}
+	headerEncode []interface{}
 	headerDecode interface{}
 
 	// query
-	queryEncode interface{}
+	queryEncode []interface{}
 
 	httpCode *int
 	g        *Gout
@@ -175,6 +175,40 @@ func (r *Req) selectRequest(body *bytes.Buffer) (req *http.Request, err error) {
 	return
 }
 
+func (r *Req) encodeQuery() error {
+	var query string
+	q := encode.NewQueryEncode(nil)
+
+	for _, queryEncode := range r.queryEncode {
+		if qStr, ok := isAndGetString(queryEncode); ok {
+			joiner := "&"
+			if len(query) == 0 {
+				joiner = ""
+			}
+
+			query += joiner + qStr
+			continue
+		}
+
+		if err := encode.Encode(queryEncode, q); err != nil {
+			return err
+		}
+
+	}
+
+	joiner := "&"
+	if len(query) == 0 {
+		joiner = ""
+	}
+
+	query += joiner + q.End()
+	if len(query) > 0 {
+		r.url += "?" + query
+	}
+
+	return nil
+}
+
 // Request Get the http.Request object
 func (r *Req) Request() (req *http.Request, err error) {
 	if r.Err != nil {
@@ -192,20 +226,8 @@ func (r *Req) Request() (req *http.Request, err error) {
 
 	// set query header
 	if r.queryEncode != nil {
-		var query string
-		if q, ok := isAndGetString(r.queryEncode); ok {
-			query = q
-		} else {
-			q := encode.NewQueryEncode(nil)
-			if err := encode.Encode(r.queryEncode, q); err != nil {
-				return nil, err
-			}
-
-			query = q.End()
-		}
-
-		if len(query) > 0 {
-			r.url += "?" + query
+		if err := r.encodeQuery(); err != nil {
+			return nil, err
 		}
 	}
 
@@ -247,7 +269,7 @@ func (r *Req) Request() (req *http.Request, err error) {
 
 	// set http header
 	if r.headerEncode != nil {
-		err = encode.Encode(r.headerEncode, encode.NewHeaderEncode(req))
+		err = r.encodeHeader(req)
 		if err != nil {
 			return nil, err
 		}
@@ -256,6 +278,21 @@ func (r *Req) Request() (req *http.Request, err error) {
 	r.addDefDebug()
 	r.addContextType(req)
 	return req, nil
+}
+
+func (r *Req) encodeHeader(req *http.Request) (err error) {
+	for _, h := range r.headerEncode {
+		if h == nil {
+			continue
+		}
+
+		err = encode.Encode(h, encode.NewHeaderEncode(req))
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func clearHeader(header http.Header) {
@@ -272,6 +309,16 @@ func (r *Req) GetContext() context.Context {
 }
 
 func (r *Req) decode(req *http.Request, resp *http.Response, openDebug bool) (err error) {
+	defer func() {
+		if err == io.EOF {
+			err = nil
+		}
+	}()
+
+	if r.httpCode != nil {
+		*r.httpCode = resp.StatusCode
+	}
+
 	if r.headerDecode != nil {
 		err = decode.Header.Decode(resp, r.headerDecode)
 		if err != nil {
@@ -283,22 +330,17 @@ func (r *Req) decode(req *http.Request, resp *http.Response, openDebug bool) (er
 		// This is code(output debug info) be placed here
 		// all, err := ioutil.ReadAll(resp.Body)
 		// respBody  = bytes.NewReader(all)
-		if err := r.g.opt.resetBodyAndPrint(req, resp); err != nil {
+		if err = r.g.opt.resetBodyAndPrint(req, resp); err != nil {
 			return err
 		}
 	}
 
 	if r.bodyDecoder != nil {
-		if err := r.bodyDecoder.Decode(resp.Body); err != nil {
-			if err != io.EOF {
-				return err
-			}
+		if err = r.bodyDecoder.Decode(resp.Body); err != nil {
+			return err
 		}
 	}
 
-	if r.httpCode != nil {
-		*r.httpCode = resp.StatusCode
-	}
 	return nil
 }
 
